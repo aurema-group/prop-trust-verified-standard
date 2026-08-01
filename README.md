@@ -63,3 +63,27 @@ Published by **Aurema Group L.L.C.** (Delaware, USA).
   month        = {July},
   doi          = {10.5281/zenodo.21719175},
   url          = {[https://doi.org/10.5281/zenodo.21719175](https://doi.org/10.5281/zenodo.21719175)}
+PTVS v1.0 operates as a multi-layered off-chain verification pipeline feeding deterministic compliance payloads directly to smart contract registries:
+
++-----------------------------------------------------------------------+
+|                    PHYSICAL & JUDICIAL AUDIT LAYER                    |
+|  - Judicial Peritorial Inspection (Certification No. 0161)           |
+|  - Structural Pathology & Load-Bearing Verification                   |
+|  - Legal Encumbrances & Registry Title Cleanliness Audit              |
++-----------------------------------------------------------------------+
+│
+▼
++-----------------------------------------------------------------------+
+|                    DETERMINISTIC PTVS SCORING SYSTEM                  |
+|  - Risk Metric Calculation (PTVS-Score: 0 - 100)                      |
+|  - Cryptographic Hash Generation (SHA-256 Digest of Full Report)     |
+|  - Immutable Timestamping (RFC 3161 / Public Ledger Anchor)          |
++-----------------------------------------------------------------------+
+│
+▼
++-----------------------------------------------------------------------+
+|                       ON-CHAIN INTERFACE LAYER                        |
+|  - ERC-3643 Identity Claim Topic Integration (ONCHAINID Claim)         |
+|  - Oracle Attestation Feed to Compliance Module                       |
+|  - Automated Minting Eligibility Gate                                 |
++-----------------------------------------------------------------------+
