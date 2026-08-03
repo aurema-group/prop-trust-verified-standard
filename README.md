@@ -117,3 +117,4 @@ The PTVS ecosystem is fully documented across institutional, technical, and acad
 - **LaTeX Academic Source:** Located under `specifications/ptvs-technical-paper/main.tex`
 
 ---
+docs: update README with official documentation and ERC-3643 specification links
