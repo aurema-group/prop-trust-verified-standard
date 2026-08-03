@@ -1,0 +1,53 @@
+{
+  "$schema": "./ptvs-claim-schema.json",
+  "title": "PTVS Physical Oracle Verification Claim",
+  "type": "object",
+  "version": "1.0.0",
+  "standard": "Prop Trust Verified Standard (PTVS v1.0)",
+  "reference_doi": "10.5281/zenodo.21719175",
+  "claim_topic": {
+    "name": "CLAIM_TOPIC_PTVS_PHYSICAL_VERIFICATION",
+    "topic_id": "0x25a6e8e04052f36d01306385a498263bd354d241c8f49ef47805a8f278d91c2f"
+  },
+  "asset_metadata": {
+    "asset_id": "SPV-NAV-2026-001",
+    "asset_type": "REAL_ESTATE_DEVELOPMENT",
+    "cadastral_reference": "000900100YJ23E0001KX",
+    "location": {
+      "country": "ESP",
+      "region": "Comunidad Valenciana",
+      "municipality": "Navarrés",
+      "coordinates": {
+        "latitude": 38.9681,
+        "longitude": -0.6936
+      }
+    }
+  },
+  "forensic_audit": {
+    "audit_status": "PASSED_VERIFIED",
+    "risk_index": "LOW",
+    "physical_oracle_verified": true,
+    "audit_timestamp": "2026-08-02T15:45:00Z",
+    "expiration_timestamp": "2027-08-02T23:59:59Z",
+    "evidence_hash": {
+      "algorithm": "SHA-256",
+      "hash": "[REEMPLAZAR_CON_HASH_REAL_DEL_INFORME_PDF]",
+      "ipfs_cid": "bafybeic316682703816634812388271387612837123",
+      "report_uri": "https://doi.org/10.5281/zenodo.21719175"
+    }
+  },
+  "certifier_identity": {
+    "issuer_role": "PTCE-0001",
+    "expert_name": "Aurelio Tamarit Blay",
+    "professional_license": {
+      "body": "Perito Judicial Habilitado",
+      "registration_number": "0161"
+    },
+    "orcid_id": "0009-0007-5824-3602",
+    "ethereum_address": "0x1234567890123456789012345678901234567890"
+  },
+  "signature": {
+    "signature_type": "EIP-712 / Secp256k1",
+    "proof_signature": "0x7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d90697611e3b2e557b7f1683d78c3b42ef0d7ef5b842323d81997d9fe5c102a0a25691c"
+  }
+}
