@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aurema-group/prop-trust-verified-standard/blob/main/specifications/erc3643-integration/ptvs-claim-schema.json",
+  "title": "PTVS Physical Oracle Verification Claim Schema",
+  "description": "Canonical JSON Schema for Prop Trust Verified Standard (PTVS) claims integrated with ERC-3643",
+  "type": "object",
+  "version": "1.0.0",
+  "standard": "Prop Trust Verified Standard (PTVS v1.0)",
+  "reference_doi": "10.5281/zenodo.21719175",
+  "properties": {
+    "claim_topic": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "const": "CLAIM_TOPIC_PTVS_PHYSICAL_VERIFICATION"
+        },
+        "topic_id": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{64}$"
+        }
+      },
+      "required": ["name", "topic_id"]
+    },
+    "asset_metadata": {
+      "type": "object",
+      "properties": {
+        "asset_id": { "type": "string" },
+        "asset_type": {
+          "type": "string",
+          "enum": ["REAL_ESTATE", "REAL_ESTATE_DEVELOPMENT", "NAVAL", "INFRASTRUCTURE", "LAND"]
+        },
+        "cadastral_reference": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "country": { "type": "string", "pattern": "^[A-Z]{3}$" },
+            "region": { "type": "string" },
+            "municipality": { "type": "string" },
+            "coordinates": {
+              "type": "object",
+              "properties": {
+                "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+                "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+              },
+              "required": ["latitude", "longitude"]
+            }
+          },
+          "required": ["country", "coordinates"]
+        }
+      },
+      "required": ["asset_id", "asset_type", "location"]
+    },
+    "forensic_audit": {
+      "type": "object",
+      "properties": {
+        "audit_status": {
+          "type": "string",
+          "enum": ["PASSED_VERIFIED", "FAILED", "PENDING_REVIEW", "EXPIRED"]
+        },
+        "risk_index": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        },
+        "physical_oracle_verified": { "type": "boolean" },
+        "audit_timestamp": { "type": "string", "format": "date-time" },
+        "expiration_timestamp": { "type": "string", "format": "date-time" },
+        "evidence_hash": {
+          "type": "object",
+          "properties": {
+            "algorithm": { "type": "string", "const": "SHA-256" },
+            "hash": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+            "ipfs_cid": { "type": "string" },
+            "report_uri": { "type": "string", "format": "uri" }
+          },
+          "required": ["algorithm", "hash"]
+        }
+      },
+      "required": ["audit_status", "audit_timestamp", "expiration_timestamp", "evidence_hash"]
+    },
+    "certifier_identity": {
+      "type": "object",
+      "properties": {
+        "issuer_role": { "type": "string", "pattern": "^PTCE-[0-9]{4}$" },
+        "expert_name": { "type": "string" },
+        "professional_license": {
+          "type": "object",
+          "properties": {
+            "body": { "type": "string" },
+            "registration_number": { "type": "string" }
+          },
+          "required": ["body", "registration_number"]
+        },
+        "orcid_id": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$" },
+        "ethereum_address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }
+      },
+      "required": ["issuer_role", "expert_name", "professional_license", "orcid_id"]
+    },
+    "signature": {
+      "type": "object",
+      "properties": {
+        "signature_type": { "type": "string", "const": "EIP-712 / Secp256k1" },
+        "proof_signature": { "type": "string", "pattern": "^0x[a-fA-F0-9]+$" }
+      },
+      "required": ["signature_type", "proof_signature"]
+    }
+  },
+  "required": ["claim_topic", "asset_metadata", "forensic_audit", "certifier_identity", "signature"]
+}
