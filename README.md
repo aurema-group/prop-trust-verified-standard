@@ -93,3 +93,27 @@ PTVS v1.0 operates as a multi-layered off-chain verification pipeline feeding de
 |  - Automated Minting Eligibility Gate                                 |
 +-----------------------------------------------------------------------+
 ```
+---
+
+## 📚 Official Documentation & Technical Specifications
+
+The PTVS ecosystem is fully documented across institutional, technical, and academic layers:
+
+### 📘 Institutional & Standard Specifications
+- **[ISO-Style Technical Specification (PDF)](docs/PTVS-ISO-Style-Specification-v1.0.pdf)** — Formal standard document following ISO/IEC formatting guidelines.
+- **[ISO-Style Technical Specification (Markdown)](docs/PTVS-ISO-Style-Specification-v1.0.md)** — Web-indexable specification for search engines and AI agents.
+- **[International Executive Dossier (PDF)](docs/PTVS-International-Dossier-v1.0.pdf)** — High-level institutional overview for investors, regulators, and partners.
+- **[International Executive Dossier (Markdown)](docs/PTVS-International-Dossier-v1.0.md)** — Markdown version of the institutional dossier.
+
+### 🔧 Technical Specifications & ERC-3643 Integration
+- **[ERC-3643 Integration Guide & Reference Code](specifications/erc3643-integration/README.md)** — Architecture guide for injecting PTVS claims into ONCHAINID contracts.
+- **[Canonical PTVS Claim JSON Schema](specifications/erc3643-integration/ptvs-claim-schema.json)** — The standard JSON Schema payload defining off-chain physical audit evidence.
+- **[Solidity Contract: PTVSClaimInjector.sol](specifications/erc3643-integration/PTVSClaimInjector.sol)** — Reference smart contract implementation for on-chain identity claims.
+- **[Real-World Example: Navarrés Project Claim](specifications/erc3643-integration/example-navarres-claim.json)** — Real-world JSON implementation for SPV asset verification (`SPV-NAV-2026-001`).
+
+### 🎓 Academic Research & Persistent Identifiers
+- **[Zenodo Research Repository (DOI)](https://doi.org/10.5281/zenodo.21719175)** — `10.5281/zenodo.21719175`
+- **Lead Investigator ORCID:** [0009-0007-5824-3602](https://orcid.org/0009-0007-5824-3602)
+- **LaTeX Academic Source:** Located under `specifications/ptvs-technical-paper/main.tex`
+
+---
