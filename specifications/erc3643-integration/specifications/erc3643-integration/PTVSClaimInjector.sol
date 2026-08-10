@@ -1,28 +1,17 @@
 // SPDX-License-Identifier: MIT
+// ==========================================================================
+// Prop Trust Verified Standard (PTVS) v1.0 - Forensics Oracle Interface
+// Copyright (c) 2026 Aurema Group L.L.C. (Delaware, USA)
+// DOI: 10.5281/zenodo.21719175 | SSRN: 7245361
+// ==========================================================================
+
 pragma solidity ^0.8.20;
 
-/**
- * @title PTVSClaimInjector
- * @dev Implementation reference for injecting Prop Trust Verified Standard (PTVS v1.0) Claims 
- * into ONCHAINID / ERC-3643 Identity Contracts.
- * 
- * @author Aurelio Tamarit Blay (ORCID: 0009-0007-5824-3602)
- * @notice Validates physical forensic auditing data for Real World Assets (RWA) and writes 
- * deterministic verification claims to the asset's identity contract.
- * @custom:doi 10.5281/zenodo.21719175
- * @custom:standard Prop Trust Verified Standard (PTVS v1.0)
- */
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol"; // Moved to utils in OZ v5
 
-interface IERC3643Identity {
-    /**
-     * @dev ERC-735 / ERC-3643 standard function to add a claim to an Identity contract.
-     * @param _topic The claim topic ID (Keccak-256 of the claim topic string).
-     * @param _scheme The signature scheme (e.g., 1 for ECDSA Secp256k1).
-     * @param _issuer Address of the claim issuer (PTCE Certified Expert).
-     * @param _signature EIP-712 or ECDSA signature validating the claim payload.
-     * @param _data Encoded payload containing proof hashes and metadata.
-     * @param _uri Off-chain URI (IPFS / Arweave / Zenodo DOI) holding the JSON verification claim.
-     */
+/// @dev Standard ONCHAINID / ERC-735 Identity Interface
+interface IIdentity {
     function addClaim(
         uint256 _topic,
         uint256 _scheme,
@@ -30,84 +19,159 @@ interface IERC3643Identity {
         bytes calldata _signature,
         bytes calldata _data,
         string calldata _uri
-    ) external returns (bytes32 claimId);
+    ) external returns (bytes32);
+    
+    // ERC-735 Standard: removeClaim requires the bytes32 claimId, not the topic
+    function removeClaim(bytes32 _claimId) external returns (bool);
 }
 
-contract PTVSClaimInjector {
-    /// @notice Topic ID for PTVS Physical Verification (Keccak-256 hash of the topic string)
-    /// @dev keccak256("CLAIM_TOPIC_PTVS_PHYSICAL_VERIFICATION")
-    bytes32 public constant PTVS_TOPIC_HASH = 0x25a6e8e04052f36d01306385a498263bd354d241c8f49ef47805a8f278d91c2f;
+/// @title PTVS Claim Injector v1.1 (Forensics Oracle Registry)
+/// @notice Injects forensic audit claims and Physical Proof of Reserve (PPoR) into ONCHAINID identities.
+/// @author Aurema Group L.L.C. - Forensics Oracle Initiative
+/// @dev Acts as a decentralized bulletin board and oracle for PTVS forensic scores.
+contract PTVSClaimInjector is Ownable, Pausable {
 
-    /// @notice Address of the contract deployer / owner
-    address public immutable owner;
+    // Topic 70710001: Registered Topic for PTVS Forensic Audit Claims
+    uint256 public constant PTVS_CLAIM_TOPIC = 70710001;
+    uint8   public constant MIN_SCORE = 70; // 0-100 Scale (70 = Circuit Breaker Threshold)
 
-    /// @notice Emitted when a new PTVS claim is injected into an ONCHAINID Identity contract
-    event PhysicalClaimInjected(
-        address indexed targetIdentity,
-        address indexed ptceIssuer,
-        bytes32 indexed claimId,
-        bytes32 evidenceHash,
-        string ipfsUri
+    address public oracleAuthority;
+
+    struct AuditClaim {
+        uint8   score;
+        bytes32 reportHash;
+        uint256 expiryTimestamp;
+        string  reportURI;
+        bool    exists;
+    }
+
+    // Mapping: Asset Identity Address => AuditClaim
+    mapping(address => AuditClaim) public claims;
+
+    // --- EVENTS ---
+    event ClaimInjected(
+        address indexed assetIdentity,
+        uint8   score,
+        bytes32 indexed reportHash,
+        uint256 expiryTimestamp,
+        string  reportURI
+    );
+    
+    event ClaimRevoked(
+        address indexed assetIdentity,
+        bytes32 indexed revokedHash,
+        string reason
     );
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "PTVSInjector: Caller is not the authorized owner");
+    event OracleAuthorityUpdated(address indexed previousAuthority, address indexed newAuthority);
+
+    // --- MODIFIERS ---
+    modifier onlyOracle() {
+        require(msg.sender == oracleAuthority, "PTVS: UNAUTHORIZED_ORACLE");
         _;
     }
 
-    constructor() {
-        owner = msg.sender;
+    constructor(address _oracleAuthority) Ownable(msg.sender) {
+        require(_oracleAuthority != address(0), "PTVS: INVALID_ADDRESS");
+        oracleAuthority = _oracleAuthority;
     }
 
-    /**
-     * @notice Injects a deterministic PTVS Physical Verification Claim into a target ONCHAINID.
-     * @param _targetIdentity Address of the ERC-3643 Identity contract belonging to the SPV / Asset Token.
-     * @param _ptceIssuer Address of the Prop Trust Certified Expert (PTCE-0001) issuing the audit.
-     * @param _ptceSignature Cryptographic signature of the auditor validating the payload.
-     * @param _evidenceHash SHA-256 hash of the forensic PDF report.
-     * @param _uri Canonical URI pointing to the JSON Schema payload (e.g., IPFS or Zenodo DOI).
-     * @return claimId The unique bytes32 identifier generated by the Identity contract.
-     */
-    function addPhysicalVerificationClaim(
-        address _targetIdentity,
-        address _ptceIssuer,
-        bytes calldata _ptceSignature,
-        bytes32 _evidenceHash,
-        string calldata _uri
-    ) external onlyOwner returns (bytes32 claimId) {
-        require(_targetIdentity != address(0), "PTVSInjector: Invalid Identity address");
-        require(_ptceIssuer != address(0), "PTVSInjector: Invalid PTCE Issuer address");
-        require(_evidenceHash != bytes32(0), "PTVSInjector: Evidence hash cannot be empty");
+    // --- ADMIN FUNCTIONS ---
 
-        // Encode evidence hash into binary payload for on-chain storage
-        bytes memory data = abi.encodePacked(_evidenceHash);
-
-        // Execute cross-contract call to the ONCHAINID identity
-        claimId = IERC3643Identity(_targetIdentity).addClaim(
-            uint256(PTVS_TOPIC_HASH),
-            1, // Scheme 1: ECDSA Signature
-            _ptceIssuer,
-            _ptceSignature,
-            data,
-            _uri
-        );
-
-        emit PhysicalClaimInjected(
-            _targetIdentity,
-            _ptceIssuer,
-            claimId,
-            _evidenceHash,
-            _uri
-        );
-
-        return claimId;
+    /// @notice Updates the trusted Oracle Signing Authority (e.g., Multisig or Backend API)
+    function setOracleAuthority(address _newAuthority) external onlyOwner {
+        require(_newAuthority != address(0), "PTVS: INVALID_ADDRESS");
+        emit OracleAuthorityUpdated(oracleAuthority, _newAuthority);
+        oracleAuthority = _newAuthority;
     }
 
-    /**
-     * @notice Utility function to compute the exact Topic ID used by PTVS.
-     * @return The uint256 representation of the PTVS Claim Topic.
-     */
-    function getPTVSTopicId() external pure returns (uint256) {
-        return uint256(PTVS_TOPIC_HASH);
+    // --- CORE ORACLE FUNCTIONS ---
+
+    /// @notice Registers audit claim internally and attempts ONCHAINID injection
+    /// @param _identityAddress The ONCHAINID Identity contract address of the tokenized asset
+    function injectClaim(
+        address _identityAddress,
+        uint8   _score,
+        bytes32 _reportHash,
+        uint256 _expiry,
+        string calldata _uri,
+        bytes calldata _signature
+    ) external onlyOracle whenNotPaused {
+        require(_score >= MIN_SCORE, "PTVS: SCORE_BELOW_THRESHOLD");
+        require(_expiry > block.timestamp, "PTVS: EXPIRED_CLAIM");
+        require(_identityAddress != address(0), "PTVS: INVALID_IDENTITY");
+
+        claims[_identityAddress] = AuditClaim({
+            score: _score,
+            reportHash: _reportHash,
+            expiryTimestamp: _expiry,
+            reportURI: _uri,
+            exists: true
+        });
+
+        // Encode PTVS Data (Score + Hash) for ONCHAINID
+        bytes memory claimData = abi.encode(_score, _reportHash);
+
+        // Attempt direct ONCHAINID Claim Injection (Scheme 1: ECDSA)
+        // Fails silently if Identity contract lacks permissions, keeping the PTVS Registry updated regardless.
+        if (_signature.length > 0 && _identityAddress.code.length > 0) {
+            try IIdentity(_identityAddress).addClaim(
+                PTVS_CLAIM_TOPIC,
+                1, // Scheme 1 = ECDSA Signature
+                address(this),
+                _signature,
+                claimData,
+                _uri
+            ) {} catch {
+                // Graceful fallback: Claim is stored in PTVS Registry even if ONCHAINID push fails.
+            }
+        }
+
+        emit ClaimInjected(_identityAddress, _score, _reportHash, _expiry, _uri);
     }
-} feat: add PTVSClaimInjector reference contract for ERC-3643
+
+    /// @notice EMERGENCY CIRCUIT BREAKER: Revokes a claim before expiration
+    /// @dev Used when physical asset suffers catastrophic damage or legal embargo.
+    function revokeClaim(address _identityAddress, string calldata _reason) external onlyOracle whenNotPaused {
+        require(claims[_identityAddress].exists, "PTVS: CLAIM_NOT_FOUND");
+        
+        bytes32 revokedHash = claims[_identityAddress].reportHash;
+        delete claims[_identityAddress];
+
+        // Attempt to remove from ONCHAINID if possible
+        if (_identityAddress.code.length > 0) {
+            // ERC-735 Claim ID is calculated as keccak256(abi.encode(issuer, topic))
+            bytes32 claimId = keccak256(abi.encode(address(this), PTVS_CLAIM_TOPIC));
+            try IIdentity(_identityAddress).removeClaim(claimId) {} catch {}
+        }
+
+        emit ClaimRevoked(_identityAddress, revokedHash, _reason);
+    }
+
+    // --- VIEW FUNCTIONS (For ERC-3643 Compliance Modules) ---
+
+    /// @notice Checks if the PTVS Forensic Audit is valid and unexpired
+    function isClaimValid(address _identityAddress) external view returns (bool) {
+        AuditClaim memory c = claims[_identityAddress];
+        return c.exists 
+            && c.score >= MIN_SCORE 
+            && c.expiryTimestamp > block.timestamp;
+    }
+
+    /// @notice Returns full claim data and validity status in a single call (Gas optimized for Compliance contracts)
+    function getClaim(address _identityAddress) external view returns (
+        uint8 score,
+        bytes32 reportHash,
+        uint256 expiryTimestamp,
+        string memory reportURI,
+        bool isValid
+    ) {
+        AuditClaim memory c = claims[_identityAddress];
+        bool valid = c.exists && c.score >= MIN_SCORE && c.expiryTimestamp > block.timestamp;
+        return (c.score, c.reportHash, c.expiryTimestamp, c.reportURI, valid);
+    }
+
+    // --- EMERGENCY FUNCTIONS ---
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+}
