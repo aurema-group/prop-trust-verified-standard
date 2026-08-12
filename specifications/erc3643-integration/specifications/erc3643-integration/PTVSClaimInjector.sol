@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // ==========================================================================
-// Prop Trust Verified Standard (PTVS) v1.0 - Forensics Oracle Interface
+// Prop Trust Verified Standard (PTVS) v1.1 - Forensics Oracle Interface
 // Copyright (c) 2026 Aurema Group L.L.C. (Delaware, USA)
 // DOI: 10.5281/zenodo.21719175 | SSRN: 7245361
 // ==========================================================================
@@ -8,7 +8,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol"; // Moved to utils in OZ v5
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
 /// @dev Standard ONCHAINID / ERC-735 Identity Interface
 interface IIdentity {
@@ -21,17 +21,14 @@ interface IIdentity {
         string calldata _uri
     ) external returns (bytes32);
     
-    // ERC-735 Standard: removeClaim requires the bytes32 claimId, not the topic
     function removeClaim(bytes32 _claimId) external returns (bool);
 }
 
 /// @title PTVS Claim Injector v1.1 (Forensics Oracle Registry)
 /// @notice Injects forensic audit claims and Physical Proof of Reserve (PPoR) into ONCHAINID identities.
 /// @author Aurema Group L.L.C. - Forensics Oracle Initiative
-/// @dev Acts as a decentralized bulletin board and oracle for PTVS forensic scores.
 contract PTVSClaimInjector is Ownable, Pausable {
 
-    // Topic 70710001: Registered Topic for PTVS Forensic Audit Claims
     uint256 public constant PTVS_CLAIM_TOPIC = 70710001;
     uint8   public constant MIN_SCORE = 70; // 0-100 Scale (70 = Circuit Breaker Threshold)
 
@@ -45,10 +42,8 @@ contract PTVSClaimInjector is Ownable, Pausable {
         bool    exists;
     }
 
-    // Mapping: Asset Identity Address => AuditClaim
     mapping(address => AuditClaim) public claims;
 
-    // --- EVENTS ---
     event ClaimInjected(
         address indexed assetIdentity,
         uint8   score,
@@ -65,7 +60,6 @@ contract PTVSClaimInjector is Ownable, Pausable {
 
     event OracleAuthorityUpdated(address indexed previousAuthority, address indexed newAuthority);
 
-    // --- MODIFIERS ---
     modifier onlyOracle() {
         require(msg.sender == oracleAuthority, "PTVS: UNAUTHORIZED_ORACLE");
         _;
@@ -76,19 +70,13 @@ contract PTVSClaimInjector is Ownable, Pausable {
         oracleAuthority = _oracleAuthority;
     }
 
-    // --- ADMIN FUNCTIONS ---
-
-    /// @notice Updates the trusted Oracle Signing Authority (e.g., Multisig or Backend API)
     function setOracleAuthority(address _newAuthority) external onlyOwner {
         require(_newAuthority != address(0), "PTVS: INVALID_ADDRESS");
         emit OracleAuthorityUpdated(oracleAuthority, _newAuthority);
         oracleAuthority = _newAuthority;
     }
 
-    // --- CORE ORACLE FUNCTIONS ---
-
     /// @notice Registers audit claim internally and attempts ONCHAINID injection
-    /// @param _identityAddress The ONCHAINID Identity contract address of the tokenized asset
     function injectClaim(
         address _identityAddress,
         uint8   _score,
@@ -97,7 +85,9 @@ contract PTVSClaimInjector is Ownable, Pausable {
         string calldata _uri,
         bytes calldata _signature
     ) external onlyOracle whenNotPaused {
-        require(_score >= MIN_SCORE, "PTVS: SCORE_BELOW_THRESHOLD");
+        // FIX 1: Removed require(_score >= MIN_SCORE). 
+        // The oracle MUST be able to register a failing score (e.g., 40) 
+        // so the Compliance Module can block transfers. Validation happens in isClaimValid().
         require(_expiry > block.timestamp, "PTVS: EXPIRED_CLAIM");
         require(_identityAddress != address(0), "PTVS: INVALID_IDENTITY");
 
@@ -109,11 +99,8 @@ contract PTVSClaimInjector is Ownable, Pausable {
             exists: true
         });
 
-        // Encode PTVS Data (Score + Hash) for ONCHAINID
         bytes memory claimData = abi.encode(_score, _reportHash);
 
-        // Attempt direct ONCHAINID Claim Injection (Scheme 1: ECDSA)
-        // Fails silently if Identity contract lacks permissions, keeping the PTVS Registry updated regardless.
         if (_signature.length > 0 && _identityAddress.code.length > 0) {
             try IIdentity(_identityAddress).addClaim(
                 PTVS_CLAIM_TOPIC,
@@ -131,26 +118,22 @@ contract PTVSClaimInjector is Ownable, Pausable {
     }
 
     /// @notice EMERGENCY CIRCUIT BREAKER: Revokes a claim before expiration
-    /// @dev Used when physical asset suffers catastrophic damage or legal embargo.
     function revokeClaim(address _identityAddress, string calldata _reason) external onlyOracle whenNotPaused {
         require(claims[_identityAddress].exists, "PTVS: CLAIM_NOT_FOUND");
         
         bytes32 revokedHash = claims[_identityAddress].reportHash;
         delete claims[_identityAddress];
 
-        // Attempt to remove from ONCHAINID if possible
         if (_identityAddress.code.length > 0) {
-            // ERC-735 Claim ID is calculated as keccak256(abi.encode(issuer, topic))
-            bytes32 claimId = keccak256(abi.encode(address(this), PTVS_CLAIM_TOPIC));
+            // FIX 2: Changed abi.encode to abi.encodePacked to match ERC-735 standard claimId generation.
+            bytes32 claimId = keccak256(abi.encodePacked(address(this), PTVS_CLAIM_TOPIC));
             try IIdentity(_identityAddress).removeClaim(claimId) {} catch {}
         }
 
         emit ClaimRevoked(_identityAddress, revokedHash, _reason);
     }
 
-    // --- VIEW FUNCTIONS (For ERC-3643 Compliance Modules) ---
-
-    /// @notice Checks if the PTVS Forensic Audit is valid and unexpired
+    /// @notice Checks if the PTVS Forensic Audit is valid, unexpired, AND meets the minimum score
     function isClaimValid(address _identityAddress) external view returns (bool) {
         AuditClaim memory c = claims[_identityAddress];
         return c.exists 
@@ -158,7 +141,7 @@ contract PTVSClaimInjector is Ownable, Pausable {
             && c.expiryTimestamp > block.timestamp;
     }
 
-    /// @notice Returns full claim data and validity status in a single call (Gas optimized for Compliance contracts)
+    /// @notice Returns full claim data and validity status in a single call
     function getClaim(address _identityAddress) external view returns (
         uint8 score,
         bytes32 reportHash,
@@ -171,7 +154,6 @@ contract PTVSClaimInjector is Ownable, Pausable {
         return (c.score, c.reportHash, c.expiryTimestamp, c.reportURI, valid);
     }
 
-    // --- EMERGENCY FUNCTIONS ---
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 }
