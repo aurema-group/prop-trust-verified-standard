@@ -6,7 +6,7 @@ The complete mathematical, legal, and cryptographic specifications of PTVS v1.0 
 - **Author:** Aurelio Tamarit Blay (Principal Researcher, Aurema Group L.L.C.)
 - **ORCID:** [0009-0007-5824-3602](https://orcid.org/0009-0007-5824-3602)
 - **Zenodo DOI:** [10.5281/zenodo.21719175](https://doi.org/10.5281/zenodo.21719175)
-- **arXiv Preprint:** Pending Announcement (Submission ID: `7897765`, Category: `cs.CR`)
+  
 
 ---
 
