@@ -60,5 +60,5 @@ If you use PTVS v1.0 in your research, infrastructure, or commercial protocol, p
   month        = {July},
   doi          = {10.5281/zenodo.21719175},
   url          = {https://doi.org/10.5281/zenodo.21719175},
-  note         = {arXiv submission ID: 7897765}
+  note         
 }
