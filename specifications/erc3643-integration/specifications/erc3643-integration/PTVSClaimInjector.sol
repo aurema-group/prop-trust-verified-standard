@@ -1,40 +1,117 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+// ═══════════════════════════════════════════════════════════════
+//  OpenZeppelin Dependencies (v4.9.x)
+//  Para migrar a v5.x: constructor() EIP712(...) Ownable(msg.sender) {}
+// ═══════════════════════════════════════════════════════════════
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
+// ═══════════════════════════════════════════════════════════════
+//  ERC-3643 / T-REX INTERFACES
+//  Definidas explícitamente para compatibilidad ABI con herramientas
+//  externas (ethers.js, web3.js, compiladores, ERC-3643 tooling).
+// ═══════════════════════════════════════════════════════════════
+
+/// @notice Minimal ONCHAINID identity interface (T-REX)
+interface IIdentity {
+    function keyHasPurpose(bytes32 key, uint256 purpose)
+        external view returns (bool);
+}
+
+/// @notice Claim Issuer interface (T-REX / ERC-3643)
+/// @dev Los Compliance Modules de ERC-3643 consultan esta interfaz
+///      vía staticcall antes de permitir cada transferencia.
+interface IClaimIssuer {
+    function isClaimValid(
+        IIdentity _identity,
+        uint256 _claimTopic,
+        bytes calldata _sig,
+        bytes calldata _data
+    ) external view returns (bool);
+
+    function revokeClaim(
+        IIdentity _identity,
+        uint256 _claimTopic,
+        bytes calldata _sig,
+        bytes calldata _data
+    ) external returns (bool);
+}
+
 /**
- * @title PTVSClaimInjector v2.0
- * @author Forensics Oracle Initiative
- * @notice Decentralized Verifiable Claim Injection for PTVS v1.0
- * @dev Replaces v1.0 centralized owner with governance-controlled architecture
- * 
- * Key Changes from v1.0:
- * - NO single owner() - replaced by TimelockController + Gnosis Safe
- * - PTCE authorization requires governance vote (3/5 approval)
- * - emergencyRevokeAll() removed (now requires 5/5 + 7 days)
- * - Dispute resolution mechanism integrated
- * - Transparent governance events
- * 
- * Standard Reference: DOI 10.5281/zenodo.21719175
- * Governance: forensics-oracle.org/governance/
- * License: MIT (Open Standard)
+ * ═══════════════════════════════════════════════════════════════
+ *  PTVSClaimInjector v1.0.2 — ERC-3643 Compatible (Staticcall-safe)
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * @title  PTVSClaimInjector v1.0.2 (ERC-3643 Safe + Strict Binding)
+ * @author Aurelio Tamarit Blay · Forensics Oracle Initiative
+ * @notice Verifiable Claim injection for PTVS v1.0 with
+ *         ERC-3643/T-REX IClaimIssuer integration.
+ *
+ * FIX LOG:
+ *   v1.0.0 → v1.0.1:
+ *     - isClaimValid() ahora es view puro (compatible con staticcall)
+ *     - Eliminadas mutaciones de estado en isClaimValid()
+ *     - Contador totalERC3643Queries eliminado (no view-safe)
+ *     - Eventos movidos fuera del path de staticcall
+ *     - Implementadas funciones auxiliares faltantes
+ *
+ *   v1.0.1 → v1.0.2:
+ *     - Herencia explícita de IClaimIssuer (compatibilidad ABI)
+ *     - Binding obligatorio: isClaimValid denega si identity no vinculada
+ *     - Eliminado path de fallback para consultas sin binding
+ *
+ * GOVERNANCE: Model A+ (Expert Authorship + Advisory Board)
+ * STANDARD:   DOI 10.5281/zenodo.21719175 (CERN/Zenodo)
  */
-contract PTVSClaimInjectorV2 is EIP712 {
+contract PTVSClaimInjector is IClaimIssuer, EIP712, Ownable, Pausable {
     using ECDSA for bytes32;
     using EnumerableSet for EnumerableSet.Bytes32Set;
+    using EnumerableSet for EnumerableSet.AddressSet;
 
-    // ============ ENUMS & STRUCTS ============
+    // ═══════════════════════════════════════════════════════════
+    //  CONSTANTS
+    // ═══════════════════════════════════════════════════════════
+
+    string public constant STANDARD_VERSION = "PTVS v1.0";
+    string public constant STANDARD_DOI = "10.5281/zenodo.21719175";
+    string public constant CONTRACT_VERSION = "1.0.2-erc3643-strict";
+    string public constant GOVERNANCE_MODEL =
+        "Model A+ (Expert Authorship + Advisory Board)";
+    string public constant ERC3643_COMPATIBILITY =
+        "T-REX / IClaimIssuer (staticcall-safe, strict binding)";
+
+    uint256 public constant DEFAULT_PTVS_CLAIM_TOPIC = 10101;
+    uint256 public constant MAX_INSPECTION_AGE = 30 days;
+    uint256 public constant REAUDIT_INTERVAL = 90 days;
+    uint8 public constant VERIFIED_THRESHOLD = 70;
+    uint8 public constant CONDITIONAL_THRESHOLD = 50;
+
+    bytes32 private constant CLAIM_TYPEHASH = keccak256(
+        "VerifiableClaim(bytes32 assetId,uint8 ptvsScore,"
+        "bytes32 forensicHash,uint256 inspectionTimestamp,"
+        "address ptceAddress)"
+    );
+
+    // ═══════════════════════════════════════════════════════════
+    //  ENUMS
+    // ═══════════════════════════════════════════════════════════
 
     enum ClaimStatus {
-        VERIFIED,      // Score 70-100: Full trading enabled
-        CONDITIONAL,   // Score 50-69: Warnings, 25% haircut
-        EXPIRED,       // 90+ days without re-audit
-        REVOKED,       // Score <50 or serious violation
-        DISPUTED       // Under dispute resolution process
+        VERIFIED,    // 70-100 → trading enabled
+        CONDITIONAL, // 50-69  → trading with haircut
+        EXPIRED,     // 90+ days sin re-audit
+        REVOKED,     // <50 o violación material
+        DISPUTED     // bajo revisión del founder
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  STRUCTS
+    // ═══════════════════════════════════════════════════════════
 
     struct VerifiableClaim {
         bytes32 assetId;
@@ -53,119 +130,79 @@ contract PTVSClaimInjectorV2 is EIP712 {
         string ptceId;
         string jurisdiction;
         uint256 authorizedAt;
-        uint256 authorizedBy;  // Application ID in governance contract
         uint256 totalInspections;
     }
 
-    // ============ CONSTANTS ============
-
-    string public constant STANDARD_VERSION = "PTVS v1.0";
-    string public constant STANDARD_DOI = "10.5281/zenodo.21719175";
-    string public constant CONTRACT_VERSION = "2.0.0";
-    
-    uint256 public constant REAUDIT_INTERVAL = 90 days;
-    uint8 public constant VERIFIED_THRESHOLD = 70;
-    uint8 public constant CONDITIONAL_THRESHOLD = 50;
-
-    bytes32 private constant CLAIM_TYPEHASH = keccak256(
-        "VerifiableClaim(bytes32 assetId,uint8 ptvsScore,bytes32 forensicHash,uint256 inspectionTimestamp,address ptceAddress)"
-    );
-
-    // ============ STATE VARIABLES ============
+    // ═══════════════════════════════════════════════════════════
+    //  STATE VARIABLES
+    // ═══════════════════════════════════════════════════════════
 
     mapping(bytes32 => VerifiableClaim) public claims;
     mapping(address => PTCEInfo) public ptces;
-    
-    EnumerableSet.Bytes32Set private allClaimIds;
-    EnumerableSet.AddressSet private activePTCEs;
-    
+
+    /// @notice Bidirectional binding: physical asset ↔ ONCHAINID identity
+    /// @dev OBLIGATORIO antes de que ERC-3643 pueda validar transfers
+    mapping(bytes32 => address) public assetIdToIdentity;
+    mapping(address => bytes32) public identityToAssetId;
+
+    EnumerableSet.Bytes32Set private _allClaimIds;
+    EnumerableSet.AddressSet private _activePTCEs;
+    EnumerableSet.AddressSet private _registeredComplianceModules;
+
     uint256 public totalClaimsInjected;
     uint256 public totalReaudits;
     uint256 public totalRevocations;
-    uint256 public totalDisputesTriggered;
+    uint256 public totalDisputes;
 
-    // Governance addresses (immutable after deployment)
-    address public immutable governance;      // PTVSGovernance contract
-    address public immutable timelock;        // PTVSTimelock contract
-    address public immutable deployer;        // Original deployer (for reference only, NO power)
+    uint256 public ptvsClaimTopic;
 
-    // ============ EVENTS ============
+    // ═══════════════════════════════════════════════════════════
+    //  EVENTS
+    // ═══════════════════════════════════════════════════════════
 
     event ClaimInjected(
-        bytes32 indexed assetId,
-        uint8 ptvsScore,
-        bytes32 indexed forensicHash,
-        address indexed ptceAddress,
-        uint256 timestamp,
-        ClaimStatus status
+        bytes32 indexed assetId, uint8 ptvsScore,
+        bytes32 indexed forensicHash, address indexed ptceAddress,
+        uint256 timestamp, ClaimStatus status
     );
-
     event ClaimRenewed(
-        bytes32 indexed assetId,
-        uint8 newScore,
-        bytes32 indexed newForensicHash,
-        uint256 timestamp,
-        ClaimStatus newStatus,
-        uint256 newVersion
+        bytes32 indexed assetId, uint8 newScore,
+        bytes32 indexed newForensicHash, uint256 timestamp,
+        ClaimStatus newStatus, uint256 newVersion
     );
-
     event ClaimRevoked(
-        bytes32 indexed assetId,
-        string reason,
-        uint256 timestamp,
-        address indexed revokedBy
+        bytes32 indexed assetId, string reason,
+        uint256 timestamp, address indexed revokedBy
     );
-
-    event ClaimExpired(
-        bytes32 indexed assetId,
-        uint256 expiredAt
+    event ClaimExpired(bytes32 indexed assetId, uint256 expiredAt);
+    event ClaimDisputed(bytes32 indexed assetId, string reason, uint256 timestamp);
+    event DisputeResolved(
+        bytes32 indexed assetId, ClaimStatus resolvedStatus, uint256 timestamp
     );
-
-    event ClaimDisputed(
-        bytes32 indexed assetId,
-        uint256 indexed disputeId,
-        address indexed claimant,
-        uint256 timestamp
-    );
-
     event CircuitBreakerTriggered(
-        bytes32 indexed assetId,
-        uint8 score,
-        string action,
-        uint256 timestamp
+        bytes32 indexed assetId, uint8 score, string action, uint256 timestamp
     );
-
     event PTCEAuthorized(
-        address indexed ptceAddress,
-        string ptceId,
-        string jurisdiction,
-        uint256 applicationId,
-        uint256 timestamp
+        address indexed ptceAddress, string ptceId,
+        string jurisdiction, uint256 timestamp
+    );
+    event PTCERevoked(address indexed ptceAddress, string reason, uint256 timestamp);
+
+    event ComplianceModuleRegistered(address indexed module, uint256 timestamp);
+    event ComplianceModuleRevoked(address indexed module, uint256 timestamp);
+    event AssetIdentityBound(
+        bytes32 indexed assetId, address indexed identity, uint256 timestamp
+    );
+    event PTVSClaimTopicUpdated(
+        uint256 oldTopic, uint256 newTopic, uint256 timestamp
     );
 
-    event PTCERevoked(
-        address indexed ptceAddress,
-        string reason,
-        uint256 timestamp
-    );
-
-    // ============ MODIFIERS ============
+    // ═══════════════════════════════════════════════════════════
+    //  MODIFIERS
+    // ═══════════════════════════════════════════════════════════
 
     modifier onlyActivePTCE() {
         require(ptces[msg.sender].isActive, "PTVS: Not an active PTCE");
-        _;
-    }
-
-    modifier onlyTimelock() {
-        require(msg.sender == timelock, "PTVS: Only timelock can execute");
-        _;
-    }
-
-    modifier onlyGovernanceOrTimelock() {
-        require(
-            msg.sender == governance || msg.sender == timelock,
-            "PTVS: Only governance or timelock"
-        );
         _;
     }
 
@@ -174,35 +211,196 @@ contract PTVSClaimInjectorV2 is EIP712 {
         _;
     }
 
-    // ============ CONSTRUCTOR ============
-
-    constructor(
-        address governanceAddress,
-        address timelockAddress
-    ) EIP712("PTVSClaimInjector", "2.0.0") {
-        require(governanceAddress != address(0), "PTVS: Invalid governance");
-        require(timelockAddress != address(0), "PTVS: Invalid timelock");
-        
-        governance = governanceAddress;
-        timelock = timelockAddress;
-        deployer = msg.sender;
-        
-        // IMPORTANT: deployer is NOT auto-authorized as PTCE
-        // All PTCEs must go through governance application process
+    modifier claimNotDisputed(bytes32 assetId) {
+        require(
+            claims[assetId].status != ClaimStatus.DISPUTED,
+            "PTVS: Claim is disputed"
+        );
+        _;
     }
 
-    // ============ PTCE MANAGEMENT (GOVERNANCE CONTROLLED) ============
+    modifier onlyRegisteredCompliance() {
+        require(
+            _registeredComplianceModules.contains(msg.sender),
+            "PTVS: Not a registered Compliance Module"
+        );
+        _;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  CONSTRUCTOR
+    // ═══════════════════════════════════════════════════════════
+
+    constructor() EIP712("PTVSClaimInjector", "1.0.2") {
+        ptvsClaimTopic = DEFAULT_PTVS_CLAIM_TOPIC;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  ⭐ ERC-3643: IClaimIssuer (STATICCALL-SAFE, STRICT BINDING)
+    // ═══════════════════════════════════════════════════════════
 
     /**
-     * @notice Authorize a new PTCE (only via governance + timelock)
-     * @dev Called by timelock after governance approval (3/5 votes)
+     * @notice IClaimIssuer.isClaimValid — SAFE for ERC-3643 staticcall
+     *
+     * @dev CRITICAL: esta función es `view` y NO modifica estado.
+     *      El Compliance Module de ERC-3643 la invoca vía staticcall
+     *      antes de cada transfer.
+     *
+     *      SECURITY: El binding identity↔asset es OBLIGATORIO.
+     *      Si identityToAssetId[_identity] == bytes32(0), la función
+     *      retorna false inmediatamente. Esto previene bypass donde
+     *      un atacante consulta por assetId sin binding previo.
+     *
+     *      Flujo correcto de despliegue:
+     *      1. injectClaim() → PTCE inyecta el claim
+     *      2. bindAssetIdentity() → Owner vincula asset ↔ identity
+     *      3. registerComplianceModule() → Owner registra el CM
+     *      4. Transfers ERC-3643 → isClaimValid() valida automáticamente
      */
+    function isClaimValid(
+        IIdentity _identity,
+        uint256 _claimTopic,
+        bytes calldata /* _sig */,
+        bytes calldata _data
+    ) external view override returns (bool) {
+        // 1. Validar claim topic
+        if (_claimTopic != ptvsClaimTopic) {
+            return false;
+        }
+
+        // 2. SECURITY: Verificar binding OBLIGATORIO
+        //    Si la identity no está vinculada a ningún asset,
+        //    denegar la validación inmediatamente.
+        bytes32 boundAssetId = identityToAssetId[address(_identity)];
+        if (boundAssetId == bytes32(0)) {
+            return false; // Identity no vinculada → inválido
+        }
+
+        // 3. Decodificar assetId de _data
+        bytes32 assetId = _decodeAssetId(_data);
+        if (assetId == bytes32(0)) {
+            return false;
+        }
+
+        // 4. Verificar que el assetId decodificado coincide
+        //    con el asset vinculado a esta identity
+        if (boundAssetId != assetId) {
+            return false; // Mismatch: identity vinculada a otro asset
+        }
+
+        // 5. Calcular status actual SIN modificar state (view-safe)
+        ClaimStatus currentStatus = _computeCurrentStatus(assetId);
+
+        // 6. Retornar validez
+        return (currentStatus == ClaimStatus.VERIFIED ||
+                currentStatus == ClaimStatus.CONDITIONAL);
+    }
+
+    /**
+     * @notice IClaimIssuer.revokeClaim — callback de Compliance Module
+     * @dev Esta función SÍ modifica state (no es view). Se llama vía
+     *      transacción normal, normalmente desde el Compliance Module
+     *      al detectar una violación on-chain.
+     */
+    function revokeClaim(
+        IIdentity _identity,
+        uint256 _claimTopic,
+        bytes calldata /* _sig */,
+        bytes calldata _data
+    ) external override onlyRegisteredCompliance returns (bool) {
+        if (_claimTopic != ptvsClaimTopic) return false;
+
+        bytes32 assetId = _decodeAssetId(_data);
+        if (assetId == bytes32(0)) return false;
+        if (claims[assetId].assetId == bytes32(0)) return false;
+        if (claims[assetId].status == ClaimStatus.REVOKED) return true;
+
+        claims[assetId].status = ClaimStatus.REVOKED;
+        totalRevocations++;
+
+        emit ClaimRevoked(
+            assetId,
+            "Revoked by ERC-3643 Compliance Module",
+            block.timestamp,
+            msg.sender
+        );
+        emit CircuitBreakerTriggered(
+            assetId,
+            claims[assetId].ptvsScore,
+            "ERC-3643 Compliance Module triggered revocation",
+            block.timestamp
+        );
+
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  ERC-3643: MANAGEMENT (state-changing)
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * @notice Bind assetId ↔ ONCHAINID identity (owner-only)
+     * @dev OBLIGATORIO antes de que ERC-3643 pueda validar transfers.
+     *      Debe llamarse UNA VEZ al desplegar cada token ERC-3643.
+     */
+    function bindAssetIdentity(bytes32 assetId, address identity)
+        external
+        onlyOwner
+        claimExists(assetId)
+    {
+        _bindAssetIdentity(assetId, identity);
+    }
+
+    /**
+     * @notice Bind desde PTCE (alternativa para el PTCE original)
+     */
+    function bindAssetIdentityAsPTCE(bytes32 assetId, address identity)
+        external
+        onlyActivePTCE
+        claimExists(assetId)
+    {
+        require(
+            claims[assetId].ptceAddress == msg.sender,
+            "PTVS: Only original PTCE can bind"
+        );
+        _bindAssetIdentity(assetId, identity);
+    }
+
+    function registerComplianceModule(address complianceModule) external onlyOwner {
+        require(complianceModule != address(0), "PTVS: Invalid address");
+        require(
+            !_registeredComplianceModules.contains(complianceModule),
+            "PTVS: Already registered"
+        );
+        _registeredComplianceModules.add(complianceModule);
+        emit ComplianceModuleRegistered(complianceModule, block.timestamp);
+    }
+
+    function revokeComplianceModule(address complianceModule) external onlyOwner {
+        require(
+            _registeredComplianceModules.contains(complianceModule),
+            "PTVS: Not registered"
+        );
+        _registeredComplianceModules.remove(complianceModule);
+        emit ComplianceModuleRevoked(complianceModule, block.timestamp);
+    }
+
+    function setPTVSClaimTopic(uint256 newTopic) external onlyOwner {
+        require(newTopic != 0, "PTVS: Invalid topic");
+        uint256 oldTopic = ptvsClaimTopic;
+        ptvsClaimTopic = newTopic;
+        emit PTVSClaimTopicUpdated(oldTopic, newTopic, block.timestamp);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  OWNER — PTCE MANAGEMENT
+    // ═══════════════════════════════════════════════════════════
+
     function authorizePTCE(
         address ptceAddress,
         string calldata ptceId,
-        string calldata jurisdiction,
-        uint256 applicationId
-    ) external onlyTimelock {
+        string calldata jurisdiction
+    ) external onlyOwner {
         require(ptceAddress != address(0), "PTVS: Invalid address");
         require(!ptces[ptceAddress].isActive, "PTVS: Already active");
 
@@ -211,76 +409,100 @@ contract PTVSClaimInjectorV2 is EIP712 {
             ptceId: ptceId,
             jurisdiction: jurisdiction,
             authorizedAt: block.timestamp,
-            authorizedBy: applicationId,
             totalInspections: 0
         });
 
-        activePTCEs.add(ptceAddress);
-
-        emit PTCEAuthorized(ptceAddress, ptceId, jurisdiction, applicationId, block.timestamp);
+        _activePTCEs.add(ptceAddress);
+        emit PTCEAuthorized(ptceAddress, ptceId, jurisdiction, block.timestamp);
     }
 
-    /**
-     * @notice Revoke a PTCE (only via governance + timelock)
-     */
-    function revokePTCE(
-        address ptceAddress,
-        string calldata reason
-    ) external onlyTimelock {
+    function revokePTCE(address ptceAddress, string calldata reason) external onlyOwner {
         require(ptces[ptceAddress].isActive, "PTVS: Not active");
-        
         ptces[ptceAddress].isActive = false;
-        activePTCEs.remove(ptceAddress);
-
+        _activePTCEs.remove(ptceAddress);
         emit PTCERevoked(ptceAddress, reason, block.timestamp);
     }
 
-    // ============ CLAIM INJECTION ============
+    // ═══════════════════════════════════════════════════════════
+    //  OWNER — CLAIM MANAGEMENT
+    // ═══════════════════════════════════════════════════════════
 
-    /**
-     * @notice Injects a new Verifiable Claim on-chain
-     * @dev Only callable by active PTCEs authorized via governance
-     */
+    function revokeClaimByOwner(bytes32 assetId, string calldata reason)
+        external onlyOwner claimExists(assetId)
+    {
+        claims[assetId].status = ClaimStatus.REVOKED;
+        totalRevocations++;
+        emit ClaimRevoked(assetId, reason, block.timestamp, msg.sender);
+        emit CircuitBreakerTriggered(
+            assetId, claims[assetId].ptvsScore, reason, block.timestamp
+        );
+    }
+
+    function disputeClaim(bytes32 assetId, string calldata reason)
+        external onlyOwner claimExists(assetId)
+    {
+        require(
+            claims[assetId].status != ClaimStatus.DISPUTED,
+            "PTVS: Already disputed"
+        );
+        claims[assetId].status = ClaimStatus.DISPUTED;
+        totalDisputes++;
+        emit ClaimDisputed(assetId, reason, block.timestamp);
+        emit CircuitBreakerTriggered(
+            assetId, claims[assetId].ptvsScore,
+            "Dispute initiated — trading restricted", block.timestamp
+        );
+    }
+
+    function resolveDispute(bytes32 assetId, ClaimStatus newStatus)
+        external onlyOwner claimExists(assetId)
+    {
+        require(claims[assetId].status == ClaimStatus.DISPUTED, "PTVS: Not disputed");
+        require(newStatus != ClaimStatus.DISPUTED, "PTVS: Cannot resolve to DISPUTED");
+        claims[assetId].status = newStatus;
+        emit DisputeResolved(assetId, newStatus, block.timestamp);
+        if (newStatus == ClaimStatus.REVOKED) {
+            emit CircuitBreakerTriggered(
+                assetId, claims[assetId].ptvsScore,
+                "Dispute resolved — claim revoked", block.timestamp
+            );
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  OWNER — ADMIN
+    // ═══════════════════════════════════════════════════════════
+
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+
+    // ═══════════════════════════════════════════════════════════
+    //  PTCE — CLAIM INJECTION
+    // ═══════════════════════════════════════════════════════════
+
     function injectClaim(
         bytes32 assetId,
         uint8 ptvsScore,
         bytes32 forensicHash,
         uint256 inspectionTimestamp,
-        bytes memory ptceSignature
-    ) external onlyActivePTCE {
+        bytes calldata ptceSignature
+    ) external onlyActivePTCE whenNotPaused {
         require(claims[assetId].assetId == bytes32(0), "PTVS: Claim already exists");
         require(ptvsScore <= 100, "PTVS: Invalid score");
         require(forensicHash != bytes32(0), "PTVS: Invalid forensic hash");
         require(inspectionTimestamp <= block.timestamp, "PTVS: Future timestamp");
         require(
-            inspectionTimestamp >= block.timestamp - 30 days,
-            "PTVS: Inspection too old"
+            inspectionTimestamp >= block.timestamp - MAX_INSPECTION_AGE,
+            "PTVS: Inspection too old (max 30 days)"
         );
 
-        // Verify PTCE signature over the claim
-        bytes32 structHash = keccak256(abi.encode(
-            CLAIM_TYPEHASH,
-            assetId,
-            ptvsScore,
-            forensicHash,
-            inspectionTimestamp,
-            msg.sender
-        ));
-        bytes32 digest = _hashTypedDataV4(structHash);
-        address signer = digest.recover(ptceSignature);
-        require(signer == msg.sender, "PTVS: Invalid PTCE signature");
+        _verifySignature(
+            assetId, ptvsScore, forensicHash,
+            inspectionTimestamp, msg.sender, ptceSignature
+        );
 
-        // Determine claim status
-        ClaimStatus status;
-        if (ptvsScore >= VERIFIED_THRESHOLD) {
-            status = ClaimStatus.VERIFIED;
-        } else if (ptvsScore >= CONDITIONAL_THRESHOLD) {
-            status = ClaimStatus.CONDITIONAL;
-        } else {
-            status = ClaimStatus.REVOKED;
-        }
+        ClaimStatus status = _scoreToStatus(ptvsScore);
 
-        // Store the claim
         claims[assetId] = VerifiableClaim({
             assetId: assetId,
             ptvsScore: ptvsScore,
@@ -293,221 +515,313 @@ contract PTVSClaimInjectorV2 is EIP712 {
             injectedAt: block.timestamp
         });
 
-        allClaimIds.add(assetId);
+        _allClaimIds.add(assetId);
         totalClaimsInjected++;
         ptces[msg.sender].totalInspections++;
 
         emit ClaimInjected(
-            assetId,
-            ptvsScore,
-            forensicHash,
-            msg.sender,
-            block.timestamp,
-            status
+            assetId, ptvsScore, forensicHash,
+            msg.sender, block.timestamp, status
         );
 
-        // Trigger circuit breaker if score too low
         if (status == ClaimStatus.REVOKED) {
             emit CircuitBreakerTriggered(
-                assetId,
-                ptvsScore,
-                "Trading paused - Score below threshold",
+                assetId, ptvsScore,
+                "Trading paused — score below threshold",
                 block.timestamp
             );
         }
     }
-
-    // ============ CLAIM RENEWAL (RE-AUDIT) ============
 
     function renewClaim(
         bytes32 assetId,
         uint8 newScore,
         bytes32 newForensicHash,
         uint256 newInspectionTimestamp,
-        bytes memory ptceSignature
-    ) external onlyActivePTCE claimExists(assetId) {
+        bytes calldata ptceSignature
+    )
+        external
+        onlyActivePTCE
+        whenNotPaused
+        claimExists(assetId)
+        claimNotDisputed(assetId)
+    {
         require(newScore <= 100, "PTVS: Invalid score");
         require(newForensicHash != bytes32(0), "PTVS: Invalid forensic hash");
         require(
             newInspectionTimestamp > claims[assetId].inspectionTimestamp,
-            "PTVS: New inspection must be after previous"
+            "PTVS: Must be after previous inspection"
         );
 
-        // Verify PTCE signature
-        bytes32 structHash = keccak256(abi.encode(
-            CLAIM_TYPEHASH,
-            assetId,
-            newScore,
-            newForensicHash,
-            newInspectionTimestamp,
-            msg.sender
-        ));
-        bytes32 digest = _hashTypedDataV4(structHash);
-        address signer = digest.recover(ptceSignature);
-        require(signer == msg.sender, "PTVS: Invalid PTCE signature");
+        _verifySignature(
+            assetId, newScore, newForensicHash,
+            newInspectionTimestamp, msg.sender, ptceSignature
+        );
 
-        // Determine new status
-        ClaimStatus newStatus;
-        if (newScore >= VERIFIED_THRESHOLD) {
-            newStatus = ClaimStatus.VERIFIED;
-        } else if (newScore >= CONDITIONAL_THRESHOLD) {
-            newStatus = ClaimStatus.CONDITIONAL;
-        } else {
-            newStatus = ClaimStatus.REVOKED;
-        }
-
+        ClaimStatus newStatus = _scoreToStatus(newScore);
         uint256 newVersion = claims[assetId].version + 1;
-        claims[assetId] = VerifiableClaim({
-            assetId: assetId,
-            ptvsScore: newScore,
-            forensicHash: newForensicHash,
-            inspectionTimestamp: newInspectionTimestamp,
-            ptceAddress: msg.sender,
-            status: newStatus,
-            lastReauditTimestamp: newInspectionTimestamp,
-            version: newVersion,
-            injectedAt: claims[assetId].injectedAt
-        });
+
+        claims[assetId].ptvsScore = newScore;
+        claims[assetId].forensicHash = newForensicHash;
+        claims[assetId].inspectionTimestamp = newInspectionTimestamp;
+        claims[assetId].ptceAddress = msg.sender;
+        claims[assetId].status = newStatus;
+        claims[assetId].lastReauditTimestamp = newInspectionTimestamp;
+        claims[assetId].version = newVersion;
 
         totalReaudits++;
         ptces[msg.sender].totalInspections++;
 
         emit ClaimRenewed(
-            assetId,
-            newScore,
-            newForensicHash,
-            block.timestamp,
-            newStatus,
-            newVersion
+            assetId, newScore, newForensicHash,
+            block.timestamp, newStatus, newVersion
         );
+
+        if (newStatus == ClaimStatus.REVOKED) {
+            emit CircuitBreakerTriggered(
+                assetId, newScore,
+                "Trading paused — re-audit score below threshold",
+                block.timestamp
+            );
+        }
     }
 
-    // ============ CLAIM REVOCATION (GOVERNANCE CONTROLLED) ============
-
-    /**
-     * @notice Revoke a claim (requires governance + timelock)
-     * @dev Cannot be called unilaterally by PTCE or owner
-     */
-    function revokeClaim(
-        bytes32 assetId,
-        string calldata reason
-    ) external onlyTimelock claimExists(assetId) {
-        claims[assetId].status = ClaimStatus.REVOKED;
-        totalRevocations++;
-
-        emit ClaimRevoked(assetId, reason, block.timestamp, msg.sender);
-        emit CircuitBreakerTriggered(
-            assetId,
-            claims[assetId].ptvsScore,
-            reason,
-            block.timestamp
-        );
-    }
-
-    // ============ DISPUTE INTEGRATION ============
-
-    /**
-     * @notice Mark a claim as disputed (called by governance)
-     */
-    function markClaimDisputed(
-        bytes32 assetId,
-        uint256 disputeId
-    ) external onlyGovernanceOrTimelock claimExists(assetId) {
-        claims[assetId].status = ClaimStatus.DISPUTED;
-        totalDisputesTriggered++;
-        
-        emit ClaimDisputed(assetId, disputeId, msg.sender, block.timestamp);
-    }
-
-    /**
-     * @notice Restore claim after dispute resolution (called by governance)
-     */
-    function restoreClaimAfterDispute(
-        bytes32 assetId,
-        ClaimStatus newStatus
-    ) external onlyGovernanceOrTimelock claimExists(assetId) {
-        claims[assetId].status = newStatus;
-    }
-
-    // ============ CLAIM EXPIRATION ============
+    // ═══════════════════════════════════════════════════════════
+    //  PUBLIC — EXPIRATION (state-changing)
+    // ═══════════════════════════════════════════════════════════
 
     function checkExpiration(bytes32 assetId) external claimExists(assetId) {
-        VerifiableClaim storage claim = claims[assetId];
-        
-        if (
-            claim.status != ClaimStatus.REVOKED &&
-            claim.status != ClaimStatus.DISPUTED &&
-            block.timestamp > claim.lastReauditTimestamp + REAUDIT_INTERVAL
-        ) {
-            claim.status = ClaimStatus.EXPIRED;
-            emit ClaimExpired(assetId, block.timestamp);
-        }
+        _applyExpiry(assetId);
     }
 
     function batchCheckExpiration(bytes32[] calldata assetIds) external {
         for (uint256 i = 0; i < assetIds.length; i++) {
             if (claims[assetIds[i]].assetId != bytes32(0)) {
-                VerifiableClaim storage claim = claims[assetIds[i]];
-                if (
-                    claim.status != ClaimStatus.REVOKED &&
-                    claim.status != ClaimStatus.DISPUTED &&
-                    block.timestamp > claim.lastReauditTimestamp + REAUDIT_INTERVAL
-                ) {
-                    claim.status = ClaimStatus.EXPIRED;
-                    emit ClaimExpired(assetIds[i], block.timestamp);
-                }
+                _applyExpiry(assetIds[i]);
             }
         }
     }
 
-    // ============ VIEW FUNCTIONS ============
+    // ═══════════════════════════════════════════════════════════
+    //  VIEW FUNCTIONS
+    // ═══════════════════════════════════════════════════════════
 
-    function getClaim(bytes32 assetId) external view returns (VerifiableClaim memory) {
-        return claims[assetId];
+    function getClaim(bytes32 assetId)
+        external view returns (VerifiableClaim memory)
+    { return claims[assetId]; }
+
+    function getClaimStatus(bytes32 assetId) external view returns (ClaimStatus) {
+        return _computeCurrentStatus(assetId);
     }
 
-    function isClaimValid(bytes32 assetId) external view returns (bool) {
-        return claims[assetId].status == ClaimStatus.VERIFIED;
+    function isClaimValidDirect(bytes32 assetId) external view returns (bool) {
+        return _computeCurrentStatus(assetId) == ClaimStatus.VERIFIED;
     }
 
     function isClaimTradable(bytes32 assetId) external view returns (bool) {
-        ClaimStatus status = claims[assetId].status;
-        return status == ClaimStatus.VERIFIED || status == ClaimStatus.CONDITIONAL;
-    }
-
-    function getClaimStatus(bytes32 assetId) external view returns (ClaimStatus) {
-        return claims[assetId].status;
+        ClaimStatus s = _computeCurrentStatus(assetId);
+        return s == ClaimStatus.VERIFIED || s == ClaimStatus.CONDITIONAL;
     }
 
     function getAllClaims() external view returns (bytes32[] memory) {
-        return allClaimIds.values();
+        return _allClaimIds.values();
     }
 
     function getClaimCount() external view returns (uint256) {
         return totalClaimsInjected;
     }
 
-    function getPTCEInfo(address ptceAddress) external view returns (PTCEInfo memory) {
-        return ptces[ptceAddress];
+    function getPTCEInfo(address ptceAddress)
+        external view returns (PTCEInfo memory)
+    { return ptces[ptceAddress]; }
+
+    function isPTCEActive(address ptceAddress) external view returns (bool) {
+        return ptces[ptceAddress].isActive;
     }
 
     function getActivePTCEs() external view returns (address[] memory) {
-        return activePTCEs.values();
+        return _activePTCEs.values();
     }
 
     function getActivePTCECount() external view returns (uint256) {
-        return activePTCEs.length();
+        return _activePTCEs.length();
     }
 
-    function getStandardInfo() external pure returns (string memory, string memory, string memory) {
-        return (STANDARD_VERSION, STANDARD_DOI, CONTRACT_VERSION);
+    function getAssetIdentity(bytes32 assetId) external view returns (address) {
+        return assetIdToIdentity[assetId];
     }
 
-    function getGovernanceInfo() external view returns (address, address) {
-        return (governance, timelock);
+    function getIdentityAsset(address identity) external view returns (bytes32) {
+        return identityToAssetId[identity];
     }
 
-    // NOTE: NO emergencyRevokeAll() function
-    // All revocations require governance vote + timelock execution
-    // This is intentional - single-entity emergency powers are a centralization risk
+    function getRegisteredComplianceModules()
+        external view returns (address[] memory)
+    { return _registeredComplianceModules.values(); }
+
+    function isComplianceModuleRegistered(address module)
+        external view returns (bool)
+    { return _registeredComplianceModules.contains(module); }
+
+    function isClaimValidByIdentity(address identity) external view returns (bool) {
+        bytes32 assetId = identityToAssetId[identity];
+        if (assetId == bytes32(0)) return false;
+        ClaimStatus s = _computeCurrentStatus(assetId);
+        return s == ClaimStatus.VERIFIED || s == ClaimStatus.CONDITIONAL;
+    }
+
+    function getStandardInfo()
+        external
+        pure
+        returns (
+            string memory version,
+            string memory doi,
+            string memory contractVer,
+            string memory governance,
+            string memory erc3643Compat
+        )
+    {
+        return (
+            STANDARD_VERSION, STANDARD_DOI, CONTRACT_VERSION,
+            GOVERNANCE_MODEL, ERC3643_COMPATIBILITY
+        );
+    }
+
+    function getContractStats()
+        external
+        view
+        returns (
+            uint256 _claims,
+            uint256 _reaudits,
+            uint256 _revocations,
+            uint256 _disputes,
+            uint256 _activePTCEs,
+            uint256 _complianceModules,
+            uint256 _claimTopic
+        )
+    {
+        return (
+            totalClaimsInjected, totalReaudits, totalRevocations, totalDisputes,
+            _activePTCEs.length(), _registeredComplianceModules.length(),
+            ptvsClaimTopic
+        );
+    }
+
+    function getDomainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  INTERNAL HELPERS
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * @dev Calcula status actual considerando expiración,
+     *      SIN modificar state (view-safe).
+     */
+    function _computeCurrentStatus(bytes32 assetId)
+        internal
+        view
+        returns (ClaimStatus)
+    {
+        VerifiableClaim storage c = claims[assetId];
+
+        if (c.assetId == bytes32(0)) {
+            return ClaimStatus.REVOKED; // inexistente = inválido
+        }
+
+        if (c.status == ClaimStatus.REVOKED ||
+            c.status == ClaimStatus.DISPUTED) {
+            return c.status;
+        }
+
+        if (block.timestamp > c.lastReauditTimestamp + REAUDIT_INTERVAL) {
+            return ClaimStatus.EXPIRED;
+        }
+
+        return c.status;
+    }
+
+    /**
+     * @dev Aplica expiración modificando state (solo llamadas no-view)
+     */
+    function _applyExpiry(bytes32 assetId) internal {
+        VerifiableClaim storage c = claims[assetId];
+        if (
+            c.status != ClaimStatus.REVOKED &&
+            c.status != ClaimStatus.DISPUTED &&
+            c.assetId != bytes32(0) &&
+            block.timestamp > c.lastReauditTimestamp + REAUDIT_INTERVAL
+        ) {
+            c.status = ClaimStatus.EXPIRED;
+            emit ClaimExpired(assetId, block.timestamp);
+            emit CircuitBreakerTriggered(
+                assetId, c.ptvsScore,
+                "Claim expired — re-audit required",
+                block.timestamp
+            );
+        }
+    }
+
+    function _scoreToStatus(uint8 score) internal pure returns (ClaimStatus) {
+        if (score >= VERIFIED_THRESHOLD) return ClaimStatus.VERIFIED;
+        if (score >= CONDITIONAL_THRESHOLD) return ClaimStatus.CONDITIONAL;
+        return ClaimStatus.REVOKED;
+    }
+
+    /**
+     * @dev Decode assetId desde el campo _data de IClaimIssuer.
+     *      Convención: los primeros 32 bytes son el assetId.
+     */
+    function _decodeAssetId(bytes calldata data)
+        internal
+        pure
+        returns (bytes32 assetId)
+    {
+        if (data.length < 32) {
+            return bytes32(0);
+        }
+        assembly {
+            assetId := calldataload(data.offset)
+        }
+    }
+
+    /**
+     * @dev Vincula bidireccionalmente assetId ↔ ONCHAINID identity
+     */
+    function _bindAssetIdentity(bytes32 assetId, address identity) internal {
+        require(identity != address(0), "PTVS: Invalid identity");
+        require(assetId != bytes32(0), "PTVS: Invalid assetId");
+
+        assetIdToIdentity[assetId] = identity;
+        identityToAssetId[identity] = assetId;
+
+        emit AssetIdentityBound(assetId, identity, block.timestamp);
+    }
+
+    /**
+     * @dev Verifica firma EIP-712 del PTCE sobre el claim
+     */
+    function _verifySignature(
+        bytes32 assetId,
+        uint8 ptvsScore,
+        bytes32 forensicHash,
+        uint256 inspectionTimestamp,
+        address ptceAddress,
+        bytes calldata signature
+    ) internal view {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                CLAIM_TYPEHASH,
+                assetId,
+                ptvsScore,
+                forensicHash,
+                inspectionTimestamp,
+                ptceAddress
+            )
+        );
+        bytes32 digest = _hashTypedDataV4(structHash);
+        address signer = digest.recover(signature);
+        require(signer == ptceAddress, "PTVS: Invalid PTCE signature");
+    }
 }
