@@ -1,0 +1,17 @@
+// PTVS-LegalCompliance.sol
+event AssetFrozenByLegalMandate(bytes32 indexed assetId, address indexed frozenAccount, string legalReferenceHash);
+
+function freezeAssetByLegalMandate(bytes32 _assetId, address _targetAccount, bytes32 _courtOrderHash) external onlyLegalComplianceRole {
+    require(_targetAccount != address(0), "PTVS: Invalid address");
+    frozenAssets[_assetId][_targetAccount] = true;
+    
+    // Ancla la orden judicial en el registro para auditoría
+    LOPRRegistry.recordLegalFreeze(_assetId, _targetAccount, _courtOrderHash);
+    
+    emit AssetFrozenByLegalMandate(_assetId, _targetAccount, _courtOrderHash);
+}
+
+modifier notFrozen(bytes32 _assetId) {
+    require(!frozenAssets[_assetId][msg.sender], "PTVS: Asset frozen by legal mandate");
+    _;
+}
