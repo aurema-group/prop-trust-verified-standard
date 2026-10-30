@@ -1,0 +1,12 @@
+// PTVS-SecureMint.sol
+modifier isPhysicallyVerified(bytes32 _assetId) {
+    // Verifica que el activo tenga un QFER anclado en el registro LO-PR
+    require(LOPRRegistry.getLatestQFERHash(_assetId) != bytes32(0), "PTVS: Asset lacks physical verification");
+    // Verifica que la verificación no tenga más de X días (evita activos degradados)
+    require(LOPRRegistry.isVerificationCurrent(_assetId, MAX_DAYS_OLD), "PTVS: Physical verification expired");
+    _;
+}
+
+function mintRWA(address _to, uint256 _amount, bytes32 _assetId) external isPhysicallyVerified(_assetId) {
+    // Lógica de acuñación segura
+}
