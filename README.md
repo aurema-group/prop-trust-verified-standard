@@ -95,3 +95,7 @@ This ensures long-term, jurisdictionally robust governance of the PTCE expert ne
 - **Zenodo DOI (Taxonomy):** 10.5281/zenodo.24001234
 - **Zenodo DOI (Technical Blueprint):** 10.5281/zenodo.24031701
 - **Safe Creative IP Registry:** 2611067566842 (SHA-256: `e1561a13c15259a5c826d94a5dcc5d0e65c1efdaec95f32dcbd0335fa013ff61`)
+
+### 🇪🇺 Regulatory Alignment & EBSI Interoperability
+The PTVS v1.0 architecture is explicitly designed to interoperate with the **European Blockchain Services Infrastructure (EBSI)**. PTCE accreditations are structured as EBSI-compatible Verifiable Credentials (ESSIF), and QFER hashes are anchored to EBSI Trusted Registers, ensuring native compliance with eIDAS 2.0 and MiCA across the EU.
+📄 **Official Announcement:** [PropTrust Association Announces PTVS v1.0 Interoperability with EBSI](https://forensics-oracle.org/news/proptrust-association-announces-ptvs-v1-0-interoperability-with-ebsi-the-definitive-standard-for-real-world-asset-rwa-tokenization-in-europe/)
