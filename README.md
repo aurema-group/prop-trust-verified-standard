@@ -84,3 +84,14 @@ If you use PTVS v1.0 in your research, infrastructure, or commercial protocol, p
   url          = {https://doi.org/10.5281/zenodo.21719175},
   note         = {Supplementary Prior Art \& Terminology Registry: 10.5281/zenodo.24001234}
 }
+
+
+## 🔄 Phase 2 Update: Institutional Governance & Swiss Integration (Nov 2026)
+The PTVS v1.0 framework is currently undergoing formal institutionalization with the establishment of the **PropTrust Association (Verein)** in Zug, Switzerland, to serve as the neutral, non-profit governing body of the standard. 
+
+This ensures long-term, jurisdictionally robust governance of the PTCE expert network and the RFC-003 protocol, aligning with the highest standards of Swiss Civil Code (Art. 60-79) and EU regulatory frameworks (MiCA, Basel III).
+
+*All prior art, terminology, and technical blueprints remain immutably anchored under:*
+- **Zenodo DOI (Taxonomy):** 10.5281/zenodo.24001234
+- **Zenodo DOI (Technical Blueprint):** 10.5281/zenodo.24031701
+- **Safe Creative IP Registry:** 2611067566842 (SHA-256: `e1561a13c15259a5c826d94a5dcc5d0e65c1efdaec95f32dcbd0335fa013ff61`)
